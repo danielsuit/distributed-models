@@ -1,73 +1,106 @@
-Build a VS Code extension in TypeScript called "Distributed Models" - a local 
-multi-agent AI coding assistant that uses Ollama models. 
+Build an open source code editor called "Distributed Models" forked from 
+VSCodium/VS Code OSS. The editor has a built in multi-agent AI system 
+that uses local Ollama models. Do not build this as an extension, 
+build it directly into the editor source.
 
-The system uses specialized agents that communicate via Redis:
+EDITOR BASE:
+- Fork from VSCodium or VS Code OSS (github.com/microsoft/vscode)
+- Remove Microsoft telemetry and branding
+- Rename to "Distributed Models" throughout the UI
+- Keep all standard VS Code editor features
 
-AGENTS:
-1. Orchestrator Agent (qwen2.5-coder:7b or similar small model)
-   - Receives user request from VS Code sidebar
-   - Breaks it into subtasks and delegates to other agents
-   - Assembles final response back to VS Code
+CORE PROBLEM TO SOLVE:
+Local models cannot use tool calls to write files directly. Instead:
+- The editor itself handles ALL file operations natively in TypeScript
+- Models only need to return structured JSON, no tool use required
+- Format: { "action": "create|edit|delete", "file": "path", "content": "..." }
+- The editor parses this JSON and performs the file operation itself
+- This means ANY local Ollama model can write files regardless of tool support
 
-2. File Structure Agent (small 3b model like llama3.2:3b)
-   - Maintains a live JSON map of the entire workspace file tree
-   - Watches for file changes using VS Code file system watcher
-   - When asked, returns relevant file paths and structure to other agents
+AGENTS (Rust backend):
+1. Orchestrator Agent (qwen2.5-coder:7b)
+   - Receives user request from editor sidebar
+   - Breaks into subtasks, delegates to other agents via Redis
+   - Tells each agent to respond in structured JSON only
 
-3. Code Writer Agent (larger model like qwen2.5-coder:14b or 32b)
-   - Receives specific coding tasks from orchestrator
+2. File Structure Agent (llama3.2:3b)
+   - Maintains live JSON map of entire workspace file tree
+   - Updates on every file change
+   - Returns relevant file paths and structure when queried
+
+3. Code Writer Agent (qwen2.5-coder:14b or largest available)
+   - Receives coding tasks from orchestrator
    - Gets file context from File Structure Agent
-   - Writes complete files, never diffs or patches
-   - Returns exact file path + complete file contents
+   - MUST respond in this exact JSON format:
+     {
+       "action": "create",
+       "file": "src/main.rs", 
+       "content": "complete file contents here"
+     }
+   - Always writes complete files, never partial content
 
 4. Error Agent (7b model)
-   - Watches VS Code diagnostics and terminal output
-   - When a build error occurs, automatically triggers and suggests fixes
-   - Sends fix tasks back through the orchestrator
+   - Watches build errors and diagnostics
+   - Returns fix instructions in same JSON format
 
 5. Review Agent (7b model)
-   - Validates Code Writer output before it gets written to disk
-   - Checks for obvious errors, missing imports, syntax issues
+   - Validates Code Writer JSON before file is written
+   - Returns approved: true/false with reason
 
 COMMUNICATION:
-- Redis queues for agent-to-agent messaging
-- Each agent has an inbox queue: agent:orchestrator, agent:filestructure, 
-  agent:codewriter, agent:error, agent:review
-- Message format: JSON with fields: id, from, to, task, context, result
+- Redis queues for agent messaging
+- Queues: agent:orchestrator, agent:filestructure, agent:codewriter, 
+  agent:error, agent:review
+- Message format: { id, from, to, task, context, result }
 
-BACKEND (Rust):
-- src/main.rs - starts all agent workers as async tokio tasks
-- src/agents/orchestrator.rs - orchestrator logic
-- src/agents/file_structure.rs - file tree management
-- src/agents/code_writer.rs - code generation
-- src/agents/error_agent.rs - error watching
-- src/agents/review.rs - output validation
-- src/config.rs - Redis URL, Ollama endpoint, model assignments per agent
-- Each agent polls its Redis queue with BLPOP and calls Ollama API
+RUST BACKEND:
+- src/main.rs - starts all agents as async tokio tasks
+- src/agents/orchestrator.rs
+- src/agents/file_structure.rs
+- src/agents/code_writer.rs
+- src/agents/error_agent.rs
+- src/agents/review.rs
+- src/config.rs - Redis URL, Ollama endpoint, model per agent
+- Exposes a local REST API on port 3000 that the editor talks to
 
-VSCODE EXTENSION (TypeScript):
-- extension/package.json - extension manifest named "distributed-models"
-- extension/src/extension.ts - activates sidebar and connects to Rust backend
-- extension/src/sidebar.ts - chat UI panel (like Cursor's sidebar)
-- extension/src/fileWatcher.ts - watches workspace and feeds File Structure Agent
-- extension/src/diagnosticsWatcher.ts - feeds errors to Error Agent
-- Sidebar UI: clean chat interface, shows which agent is currently working,
-  displays file operations before applying them with an Accept/Reject button
+EDITOR INTEGRATION (TypeScript, built into VS Code OSS source):
+- src/vs/workbench/contrib/distributedModels/browser/sidebar.ts
+  - Chat UI panel built into workbench
+  - Shows which agent is currently active
+  - Streams responses as they come in
 
-FILE OPERATIONS:
-- Never use diffs or patches
-- Code Writer returns: { "file": "src/main.rs", "content": "..." }
-- Extension shows a preview diff in VS Code before writing
-- User clicks Accept to write the file, Reject to discard
+- src/vs/workbench/contrib/distributedModels/browser/fileOperations.ts
+  - Parses JSON responses from agents
+  - Shows Accept/Reject preview before writing
+  - Performs actual file writes using VS Code's file system API
+  - This is the key piece that bypasses tool use limitations
+
+- src/vs/workbench/contrib/distributedModels/browser/agentClient.ts
+  - Talks to Rust backend REST API on port 3000
+  - Handles streaming responses
+  - Manages agent status updates
+
+- src/vs/workbench/contrib/distributedModels/browser/fileWatcher.ts
+  - Watches workspace for changes
+  - Feeds updates to File Structure Agent
+
+- src/vs/workbench/contrib/distributedModels/browser/diagnosticsWatcher.ts
+  - Monitors editor diagnostics
+  - Triggers Error Agent on build failures
 
 SETUP FILES:
-- Cargo.toml with all Rust dependencies
-- extension/package.json with vsce, typescript dependencies  
+- Cargo.toml
 - docker-compose.yml for Redis
-- .env with default model assignments
-- README.md with full setup instructions
-- install.sh script that installs Redis, pulls Ollama models, builds Rust 
-  backend, and installs VS Code extension all in one command
+- .env with model assignments
+- README.md with full build and setup instructions
+- install.sh that:
+  1. Clones VS Code OSS source
+  2. Applies our modifications
+  3. Installs Redis via docker
+  4. Pulls required Ollama models
+  5. Builds Rust backend
+  6. Builds the editor with yarn
+  7. Produces a runnable binary called distributed-models
 
 Create every single file with complete contents, no placeholders or TODOs.
-The project folder should be called "distributed-models"
+Project folder: distributed-models
