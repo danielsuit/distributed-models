@@ -1,0 +1,9 @@
+target/
+Cargo.lock.bak
+.DS_Store
+node_modules/
+extension/out/
+extension/*.vsix
+extension/.vscode-test/
+.env.local
+*.log
