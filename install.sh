@@ -1,17 +1,41 @@
 #!/usr/bin/env bash
-# install.sh - one-shot setup for the Distributed Models backend.
+# install.sh - one-shot setup for the Distributed Models project.
 #
-# What it does:
-#   1. Starts Redis (via docker compose, falling back to a system install)
-#   2. Ensures Ollama is installed and running, then pulls the default models
-#   3. Builds the Rust backend in release mode
+# Steps:
+#   1. Start Redis (docker compose, then redis-server / brew / apt fallback).
+#   2. Install / start Ollama and pull the configured models.
+#   3. Build the Rust backend in release mode.
+#   4. Clone microsoft/vscode into this repo (if --with-editor is passed)
+#      and apply the
+#      editor overlay so the result builds as the "Distributed Models" editor.
 #
-# Run from the repository root:  ./install.sh
+# Run from the repo root:
+#   ./install.sh                 # just the backend
+#   ./install.sh --with-editor   # also clone & patch vscode (requires npm)
+#
+# Editor build is heavy (~10-15 GB checkout, 30-90 minutes on first run) so
+# it is opt-in.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
+
+WITH_EDITOR=0
+EDITOR_DIR="$REPO_ROOT/editor/vscode-oss"
+LEGACY_EDITOR_DIR="$REPO_ROOT/../distributed-models-editor"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --with-editor) WITH_EDITOR=1; shift ;;
+        --editor-dir) EDITOR_DIR="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,17p' "$0"
+            exit 0
+            ;;
+        *) echo "unknown flag: $1" >&2; exit 64 ;;
+    esac
+done
 
 log() { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
@@ -166,9 +190,56 @@ fi
 log "Building Rust backend (release)"
 cargo build --release
 
+# ---------------------------------------------------------------------------
+# 4. Editor (optional)
+# ---------------------------------------------------------------------------
+if [[ "$WITH_EDITOR" == "1" ]]; then
+    if ! command -v git >/dev/null 2>&1; then
+        die "git is required for --with-editor"
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        warn "npm not found; install Node.js (v22.x) before running 'npm i' inside the editor clone."
+    fi
+
+    # If the user previously cloned to ../distributed-models-editor (old default),
+    # migrate that checkout into the new in-repo location automatically.
+    if [[ "$EDITOR_DIR" == "$REPO_ROOT/editor/vscode-oss" ]] \
+        && [[ ! -d "$EDITOR_DIR/.git" ]] \
+        && [[ -d "$LEGACY_EDITOR_DIR/.git" ]]; then
+        log "Migrating existing editor clone from $LEGACY_EDITOR_DIR to $EDITOR_DIR"
+        mkdir -p "$(dirname "$EDITOR_DIR")"
+        mv "$LEGACY_EDITOR_DIR" "$EDITOR_DIR"
+    fi
+
+    if [[ ! -d "$EDITOR_DIR/.git" ]]; then
+        log "Cloning microsoft/vscode into $EDITOR_DIR"
+        mkdir -p "$(dirname "$EDITOR_DIR")"
+        git clone https://github.com/microsoft/vscode.git "$EDITOR_DIR"
+    else
+        log "Reusing existing vscode clone at $EDITOR_DIR"
+    fi
+
+    log "Applying Distributed Models overlay"
+    "$REPO_ROOT/editor/apply.sh" "$EDITOR_DIR"
+
+    if command -v npm >/dev/null 2>&1; then
+        log "Running npm install inside the editor clone"
+        ( cd "$EDITOR_DIR" && npm i )
+        log "Run 'cd $EDITOR_DIR && npm run watch' in one terminal and './scripts/code.sh' in another to launch."
+    else
+        warn "Skipping npm install. Install Node.js (v22.x) and run 'npm i' inside $EDITOR_DIR before launching."
+    fi
+fi
+
 log "Done."
 echo
-echo "Next steps:"
-echo "  ./target/release/distributed-models serve            # start the daemon"
-echo "  ./target/release/distributed-models health           # check it's alive"
-echo "  ./target/release/distributed-models chat 'hello'     # send a chat message"
+echo "Backend:"
+echo "  ./target/release/distributed-models serve"
+echo "  ./target/release/distributed-models health"
+echo "  ./target/release/distributed-models chat 'hello'"
+if [[ "$WITH_EDITOR" == "1" ]]; then
+    echo
+    echo "Editor:"
+    echo "  cd $EDITOR_DIR && npm run watch     # in one terminal"
+    echo "  cd $EDITOR_DIR && ./scripts/code.sh   # in another"
+fi

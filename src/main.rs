@@ -4,29 +4,26 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
-mod agents;
-mod bus;
-mod cli;
-mod config;
-mod messages;
-mod ollama;
-mod proposals;
-mod server;
-
-use crate::bus::Bus;
-use crate::config::Config;
-use crate::ollama::OllamaClient;
-use crate::proposals::ProposalStore;
-use crate::server::AppState;
+use distributed_models::{
+    agents,
+    bus::Bus,
+    cli,
+    config::Config,
+    index::SemanticIndex,
+    job_cancel::JobCancellation,
+    ollama::OllamaClient,
+    proposals::ProposalStore,
+    server::{self, AppState},
+};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "distributed-models",
     version,
-    about = "Local multi-agent AI coding assistant powered by Ollama and Redis"
+    about = "Local multi-agent AI coding backend powered by Ollama and Redis"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,7 +33,14 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Run the backend daemon (default).
-    Serve,
+    Serve {
+        /// Host/interface to bind. Overrides `host` in distributed-models.yaml.
+        #[arg(long)]
+        host: Option<String>,
+        /// TCP port to bind. Overrides `port` in distributed-models.yaml.
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Send a single chat message to a running backend and stream the response.
     Chat {
         /// The user message to send.
@@ -58,11 +62,22 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
-    let cli = Cli::parse();
-    let config = Config::from_env();
+    let cli_args = Cli::parse();
+    let mut config = Config::load();
 
-    match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(config).await,
+    match cli_args.command.unwrap_or(Command::Serve {
+        host: None,
+        port: None,
+    }) {
+        Command::Serve { host, port } => {
+            if let Some(h) = host {
+                config.host = h;
+            }
+            if let Some(p) = port {
+                config.port = p;
+            }
+            serve(config).await
+        }
         Command::Chat {
             message,
             workspace,
@@ -94,23 +109,38 @@ async fn serve(config: Config) -> Result<()> {
     let bus = Bus::connect(&config.redis_url).await?;
     let ollama = OllamaClient::new(config.ollama_endpoint.clone());
     let proposals = ProposalStore::new();
+    let job_cancel = JobCancellation::default();
+    let models = Arc::new(RwLock::new(config.models.clone()));
+    let semantic_index = SemanticIndex::new();
     let (events_tx, _events_rx) = broadcast::channel(256);
 
     let state = AppState {
         config: config.clone(),
+        config_path: Config::resolve_config_path(),
+        models: models.clone(),
         bus: bus.clone(),
         proposals: proposals.clone(),
+        job_cancel: job_cancel.clone(),
         events_tx: events_tx.clone(),
         workspace_root: Arc::new(Mutex::new(None)),
+        ollama: ollama.clone(),
+        semantic_index: semantic_index.clone(),
     };
 
-    let _pump = server::spawn_event_pump(config.redis_url.clone(), events_tx.clone());
+    let _pump = server::spawn_event_pump(
+        config.redis_url.clone(),
+        bus.prefix().to_string(),
+        events_tx.clone(),
+    );
 
     agents::spawn_all(agents::AgentRuntime {
         config: config.clone(),
+        models,
         bus: bus.clone(),
         ollama: ollama.clone(),
         proposals: proposals.clone(),
+        job_cancel,
+        semantic_index,
     });
 
     server::run_server(state).await

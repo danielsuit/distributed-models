@@ -3,22 +3,28 @@ name = "distributed-models"
 version = "0.1.0"
 edition = "2021"
 authors = ["Distributed Models Contributors"]
-description = "Local multi-agent AI coding assistant backend powered by Ollama and Redis"
+description = "Local multi-agent AI coding backend powered by Ollama and Redis"
 license = "MIT"
 
 [[bin]]
 name = "distributed-models"
 path = "src/main.rs"
 
+[lib]
+name = "distributed_models"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { version = "1.36", features = ["full"] }
-axum = { version = "0.7", features = ["ws", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = { version = "0.7", features = ["macros"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 redis = { version = "0.25", features = ["tokio-comp", "aio", "connection-manager"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 uuid = { version = "1.7", features = ["v4", "serde"] }
 anyhow = "1.0"
 thiserror = "1.0"
@@ -29,11 +35,14 @@ futures = "0.3"
 futures-util = "0.3"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-tokio-stream = "0.1"
 parking_lot = "0.12"
-regex = "1.10"
 clap = { version = "4.5", features = ["derive"] }
-tokio-tungstenite = "0.24"
+tree-sitter = "0.22"
+tree-sitter-rust = "0.21"
+
+[dev-dependencies]
+# All test dependencies are already part of the main graph so the test suite
+# never needs to fetch new crates.
 
 [profile.release]
 lto = true

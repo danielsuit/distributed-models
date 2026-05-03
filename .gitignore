@@ -7,3 +7,6 @@ extension/*.vsix
 extension/.vscode-test/
 .env.local
 *.log
+editor/vscode-oss/
+distributed-models.test-*.yaml
+.env
